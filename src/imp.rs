@@ -99,7 +99,7 @@ impl FlexHlsSink {
         }
     }
 
-    fn on_format_location(&self, fragment_id: u32) -> Result<(), String> {
+    fn on_format_location(&self, fragment_id: u32) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
         let (current_segment_location, current_segment_file) = match &mut *state {
             State::Stopped => return Err("Not in Started state".to_string()),
@@ -132,7 +132,7 @@ impl FlexHlsSink {
             err.to_string()
         })?;
 
-        *current_segment_location = Some(segment_file_location);
+        *current_segment_location = Some(segment_file_location.clone());
         *current_segment_file = Some(segment_file);
 
         gst_info!(
@@ -140,7 +140,7 @@ impl FlexHlsSink {
             "New segment location: {}",
             current_segment_location.as_ref().unwrap()
         );
-        Ok(())
+        Ok(segment_file_location)
     }
 
     fn start(
@@ -193,7 +193,7 @@ impl FlexHlsSink {
         element: &super::FlexHlsSink,
         fragment_closed_at: gst::ClockTime,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst_debug!(CAT, obj: element, "Preparing to write new playlist");
+        gst_info!(CAT, obj: element, "Preparing to write new playlist");
 
         let mut state = self.state.lock().unwrap();
         match &mut *state {
@@ -486,8 +486,12 @@ impl ObjectImpl for FlexHlsSink {
 
         let splitmuxsink = gst::ElementFactory::make("splitmuxsink", Some("split_mux_sink"))
             .expect("Could not make element splitmuxsink");
-        let app_sink = gst::ElementFactory::make("appsink", Some("app_sink"))
+        let app_sink = gst::ElementFactory::make("appsink", Some("giostreamsink_replacement_sink"))
             .expect("Could not make element appsink");
+        app_sink.set_property("sync", &false).unwrap();
+        app_sink.set_property("async", &false).unwrap();
+        app_sink.set_property("emit-signals", &true).unwrap();
+
         let mux = gst::ElementFactory::make("mpegtsmux", Some("mpeg-ts_mux"))
             .expect("Could not make element mpegtsmux");
 
@@ -516,40 +520,43 @@ impl ObjectImpl for FlexHlsSink {
 
                 gst_info!(CAT, "Got fragment-id: {}", fragment_id);
 
-                if let Err(err) = this.on_format_location(fragment_id) {
-                    gst_error!(CAT, "on format-location handler: {}", err);
+                match this.on_format_location(fragment_id) {
+                    Ok(segment_location) => Some(segment_location.to_value()),
+                    Err(err) => {
+                        gst_error!(CAT, "on format-location handler: {}", err);
+                        Some("unknown_segment".to_value())
+                    }
                 }
-
-                None
             })
             .unwrap();
 
-        let sink = app_sink.downcast_ref::<gst_app::AppSink>().unwrap();
+        let appsink = app_sink.downcast_ref::<gst_app::AppSink>().unwrap();
+
         let this = self.clone();
         let element_weak = obj.downgrade();
-        sink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |app_sink| {
-                    let sample = app_sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+        appsink.connect_new_sample(move |appsink| {
+            let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+            let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
 
-                    let mut state = this.state.lock().unwrap();
-                    let (current_segment_file, current_segment_location) = match &mut *state {
-                        State::Stopped => return Err(gst::FlowError::Error),
-                        State::Started {
-                            current_segment_file,
-                            current_segment_location,
-                            ..
-                        } => (current_segment_file, current_segment_location),
-                    };
+            gst_info!(CAT, "Got new sample buffer[{}]", buffer.size());
 
-                    if let (Some(segment_file), Some(segment_location)) =
-                        (current_segment_file, current_segment_location)
-                    {
-                        let segment_location = segment_location.clone();
-                        let data = buffer.map_readable().unwrap();
-                        segment_file.write(&data).map_err(|err| {
-                            let error_msg = gst::error_msg!(
+            let mut state = this.state.lock().unwrap();
+            let (current_segment_file, current_segment_location) = match &mut *state {
+                State::Stopped => return Err(gst::FlowError::Error),
+                State::Started {
+                    current_segment_file,
+                    current_segment_location,
+                    ..
+                } => (current_segment_file, current_segment_location),
+            };
+
+            if let (Some(segment_file), Some(segment_location)) =
+            (current_segment_file, current_segment_location)
+            {
+                let segment_location = segment_location.clone();
+                let data = buffer.map_readable().unwrap();
+                segment_file.write(&data).map_err(|err| {
+                    let error_msg = gst::error_msg!(
                                 gst::ResourceError::OpenWrite,
                                 [
                                     "Could not write to segment file \"{}\": {}",
@@ -557,17 +564,15 @@ impl ObjectImpl for FlexHlsSink {
                                     err.to_string(),
                                 ]
                             );
-                            let element = element_weak.upgrade().unwrap();
-                            element.post_error_message(error_msg);
+                    let element = element_weak.upgrade().unwrap();
+                    element.post_error_message(error_msg);
 
-                            gst::FlowError::Error
-                        })?;
-                    }
+                    gst::FlowError::Error
+                })?;
+            }
 
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
+            Ok(gst::FlowSuccess::Ok)
+        });
 
         settings.splitmuxsink = Some(splitmuxsink);
         settings.app_sink = Some(app_sink);
@@ -727,8 +732,8 @@ impl ElementImpl for FlexHlsSink {
             .as_ref()
             .unwrap()
             .release_request_pad(pad);
-        element.remove_pad(pad).unwrap();
         pad.set_active(false).unwrap();
+        element.remove_pad(pad).unwrap();
 
         let ghost_pad = pad.downcast_ref::<gst::GhostPad>().unwrap();
         if "audio" == ghost_pad.name() {
