@@ -1,6 +1,7 @@
 [package]
 name = "gst-flexhlssink"
 description = "GStreamer Plugin that is a highly configurable HLS (HTTP Live Streaming) sink"
+repository = "https://github.com/rafaelcaricio/gst-flexhlssink-rs"
 version = "0.1.0"
 authors = ["Rafael Caricio <rafael@caricio.com>"]
 edition = "2018"
