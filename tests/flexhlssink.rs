@@ -24,6 +24,76 @@ fn init() {
 }
 
 #[test]
+fn test_basic_element_with_video_content() {
+    init();
+
+    const BUFFER_NB: i32 = 3;
+
+    let pipeline = gst::Pipeline::new(Some("video_pipeline"));
+
+    let video_src = gst::ElementFactory::make("videotestsrc", Some("videotestsrc")).unwrap();
+    video_src.set_property("is-live", &true).unwrap();
+    video_src.set_property("num-buffers", &BUFFER_NB).unwrap();
+
+    let x264enc= gst::ElementFactory::make("x264enc", Some("x264enc")).unwrap();
+    let h264parse = gst::ElementFactory::make("h264parse", Some("h264parse")).unwrap();
+
+    let flexhlssink = gst::ElementFactory::make("flexhlssink", Some("flexhlssink")).unwrap();
+    flexhlssink.set_property("target-duration", &6u32).unwrap();
+
+    // let app_sink = gst::ElementFactory::make("appsink", Some("appsink")).unwrap();
+    // app_sink.set_property("sync", &false).unwrap();
+    // app_sink.set_property("async", &false).unwrap();
+    // app_sink.set_property("emit-signals", &true).unwrap();
+
+    pipeline
+        .add_many(&[
+            &video_src,
+            &x264enc,
+            &h264parse,
+            //&app_sink
+            &flexhlssink,
+        ])
+        .unwrap();
+
+    gst::Element::link_many(&[
+        &video_src,
+        &x264enc,
+        &h264parse,
+        &flexhlssink,
+    ]).unwrap();
+
+    // let appsink = app_sink.dynamic_cast::<gst_app::AppSink>().unwrap();
+    // let (sender, receiver) = mpsc::channel();
+    // appsink.connect_new_sample(move |appsink| {
+    //     let _sample = appsink
+    //         .emit_by_name("pull-sample", &[])
+    //         .unwrap()
+    //         .unwrap()
+    //         .get::<gst::Sample>()
+    //         .unwrap();
+    //
+    //     sender.send(()).unwrap();
+    //     Ok(gst::FlowSuccess::Ok)
+    // });
+
+    pipeline.set_state(gst::State::Playing).unwrap();
+    //
+    // gst_info!(
+    //     CAT,
+    //     "flexhlssink_video_pipeline: waiting for {} buffers",
+    //     BUFFER_NB
+    // );
+    // for idx in 0..BUFFER_NB {
+    //     receiver.recv().unwrap();
+    //     gst_info!(CAT, "flexhlssink_video_pipeline: received buffer #{}", idx);
+    // }
+
+    pipeline.set_state(gst::State::Null).unwrap();
+}
+
+
+#[test]
 fn test_basic_element_properties() {
     init();
 
@@ -35,18 +105,17 @@ fn test_basic_element_properties() {
     audio_src.set_property("is-live", &true).unwrap();
     audio_src.set_property("num-buffers", &BUFFER_NB).unwrap();
 
-    let decodebin = gst::ElementFactory::make("decodebin", Some("decodebin_base")).unwrap();
 
-    let video_src = gst::ElementFactory::make("videotestsrc", Some("videotestsrc")).unwrap();
-    video_src.set_property("is-live", &true).unwrap();
-    video_src.set_property("num-buffers", &BUFFER_NB).unwrap();
-
-    let audio_convert = gst::ElementFactory::make("audioconvert", Some("audioconvert")).unwrap();
+    // let video_src = gst::ElementFactory::make("videotestsrc", Some("videotestsrc")).unwrap();
+    // video_src.set_property("is-live", &true).unwrap();
+    // video_src.set_property("num-buffers", &BUFFER_NB).unwrap();
 
     let tee = gst::ElementFactory::make("tee", Some("tee")).unwrap();
 
     let hls_queue = gst::ElementFactory::make("queue", Some("hls_queue")).unwrap();
-    let hls_audio_convert = gst::ElementFactory::make("audioconvert", Some("hls_audioconvert")).unwrap();
+    // let decodebin = gst::ElementFactory::make("decodebin", Some("decodebin_base")).unwrap();
+    // let audio_convert = gst::ElementFactory::make("audioconvert", Some("audioconvert")).unwrap();
+    let hls_avenc_aac = gst::ElementFactory::make("avenc_aac", Some("hls_avenc_aac")).unwrap();
     let flexhlssink = gst::ElementFactory::make("flexhlssink", Some("flexhlssink")).unwrap();
     flexhlssink.set_property("target-duration", &6u32).unwrap();
 
@@ -63,19 +132,21 @@ fn test_basic_element_properties() {
             &app_queue,
             &app_sink,
             &hls_queue,
-            &decodebin,
-            &audio_convert,
-            // &hls_audio_convert,
+            //&decodebin,
+            //&audio_convert,
+            &hls_avenc_aac,
             &flexhlssink,
         ])
         .unwrap();
 
     gst::Element::link_many(&[&audio_src, &tee]).unwrap();
     gst::Element::link_many(&[&app_queue, &app_sink]).unwrap();
-    gst::Element::link_many(&[&hls_queue, &decodebin]).unwrap();
+    gst::Element::link_many(&[&hls_queue, &hls_avenc_aac, &flexhlssink]).unwrap();
+    // gst::Element::link_many(&[&audio_convert, &flexhlssink]).unwrap();
+    // gst::Element::link_many(&[&hls_queue, &decodebin, &audio_convert, &flexhlssink]).unwrap();
 
     // hls_queue.link_pads(Some("src"), &hls_audio_convert, Some("sink")).unwrap();
-    // audio_convert.link_pads(Some("src"), &flexhlssink, Some("audio")).unwrap();
+    // audio_convert.link_pads(Some("src"), , Some("audio")).unwrap();
 
     // Link the appsink
     let tee_app_pad = tee.request_pad_simple("src_%u").unwrap();
@@ -94,32 +165,25 @@ fn test_basic_element_properties() {
     );
     let hls_queue_pad = hls_queue.static_pad("sink").unwrap();
     tee_hls_pad.link(&hls_queue_pad).unwrap();
-
-    // Link the queue to flexhlssink to link on audio
-    // let audio_convert_pad = audio_convert.static_pad("src").unwrap();
-    // println!(
-    //     "Obtained request pad {} for the flex HLS sink",
-    //     audio_convert_pad.name()
-    // );
-    // let hls_audio_pad = flexhlssink.request_pad_simple("audio").unwrap();
-    // audio_convert_pad.link(&hls_audio_pad).unwrap();
-
-    let audio_convert_clone = audio_convert.clone();
-    let flexhlssink_clone = flexhlssink.clone();
-    decodebin.connect_pad_added(move |_, pad| {
-        let caps = pad.current_caps().unwrap();
-        let s = caps.structure(0).unwrap();
-
-        let audio_convert_sink_pad = audio_convert_clone.static_pad("sink").unwrap();
-
-        if s.name() == "audio/x-raw" && !audio_convert_sink_pad.is_linked() {
-            pad.link(&audio_convert_sink_pad).unwrap();
-
-            let audio_convert_src_pad = audio_convert_clone.static_pad("src").unwrap();
-            let hls_audio_pad = flexhlssink_clone.request_pad_simple("audio").unwrap();
-            audio_convert_src_pad.link(&hls_audio_pad).unwrap();
-        }
-    });
+    //
+    // let audio_convert_clone = audio_convert.clone();
+    // let flexhlssink_clone = flexhlssink.clone();
+    // decodebin.connect_pad_added(move |_, pad| {
+    //     let caps = pad.current_caps().unwrap();
+    //     let s = caps.structure(0).unwrap();
+    //
+    //     let audio_convert_sink_pad = audio_convert_clone.static_pad("sink").unwrap();
+    //
+    //     if s.name() == "audio/x-raw" && !audio_convert_sink_pad.is_linked() {
+    //         pad.link(&audio_convert_sink_pad).unwrap();
+    //
+    //         let audio_convert_src_pad = audio_convert_clone.static_pad("src").unwrap();
+    //         let hls_audio_pad = flexhlssink_clone.request_pad_simple("audio").unwrap();
+    //         println!("Caps for new audio_convert_src_pad: {:?}", audio_convert_src_pad.caps());
+    //         println!("Caps for new hls_audio_pad: {:?}", hls_audio_pad.caps());
+    //         audio_convert_src_pad.link(&hls_audio_pad).unwrap();
+    //     }
+    // });
 
     // audio_src.connect_pad_added(move |src, src_pad| {
     //     println!(

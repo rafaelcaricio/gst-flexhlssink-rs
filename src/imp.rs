@@ -1,7 +1,7 @@
 use glib::subclass::prelude::*;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use gst::{gst_debug, gst_error, gst_info};
+use gst::{gst_debug, gst_error, gst_info, gst_trace};
 
 use crate::playlist::PlaylistRenderState;
 use m3u8_rs::playlist::{MediaPlaylist, MediaPlaylistType, MediaSegment};
@@ -116,6 +116,11 @@ impl FlexHlsSink {
         let segment_file_location = settings
             .location
             .replace(BACKWARDS_COMPATIBLE_PLACEHOLDER, &seq_num);
+        gst_trace!(
+            CAT,
+            "Segment location formatted: {}",
+            segment_file_location
+        );
 
         let segment_file_location_clone = segment_file_location.clone();
         let segment_file = File::create(&segment_file_location).map_err(move |err| {
@@ -130,7 +135,7 @@ impl FlexHlsSink {
         *current_segment_location = Some(segment_file_location);
         *current_segment_file = Some(segment_file);
 
-        gst_debug!(
+        gst_info!(
             CAT,
             "New segment location: {}",
             current_segment_location.as_ref().unwrap()
@@ -509,9 +514,12 @@ impl ObjectImpl for FlexHlsSink {
             .connect("format-location", false, move |args| {
                 let fragment_id = args[1].get::<u32>().unwrap();
 
+                gst_info!(CAT, "Got fragment-id: {}", fragment_id);
+
                 if let Err(err) = this.on_format_location(fragment_id) {
                     gst_error!(CAT, "on format-location handler: {}", err);
                 }
+
                 None
             })
             .unwrap();
@@ -638,11 +646,11 @@ impl ElementImpl for FlexHlsSink {
         &self,
         element: &Self::Type,
         templ: &gst::PadTemplate,
-        name: Option<String>,
+        _name: Option<String>,
         caps: Option<&gst::Caps>,
     ) -> Option<gst::Pad> {
         let mut settings = self.settings.lock().unwrap();
-        match name.as_ref().map(|val| val.as_str()) {
+        match templ.name_template().as_ref().map(|val| val.as_str()) {
             Some("audio") => {
                 if settings.audio_sink {
                     gst_debug!(
@@ -652,17 +660,15 @@ impl ElementImpl for FlexHlsSink {
                     );
                     return None;
                 }
-                gst_info!(CAT, "creating the audio pad");
 
                 let splitmuxsink = match &mut settings.splitmuxsink {
                     None => return None,
                     Some(sms) => sms,
                 };
                 let peer_pad = splitmuxsink.request_pad_simple("audio_0").unwrap();
-                println!("Peer pad caps: {:?}", peer_pad.allowed_caps());
                 let sink_pad = gst::GhostPad::from_template_with_target(&templ, Some("audio"), &peer_pad).unwrap();
-                sink_pad.set_active(true).unwrap();
                 element.add_pad(&sink_pad).unwrap();
+                sink_pad.set_active(true).unwrap();
                 settings.audio_sink = true;
 
                 Some(sink_pad.upcast())
@@ -676,26 +682,27 @@ impl ElementImpl for FlexHlsSink {
                     );
                     return None;
                 }
-                let peer_pad_name = "video";
-                let pad_name = "video";
-
                 let splitmuxsink = match &mut settings.splitmuxsink {
                     None => return None,
                     Some(sms) => sms,
                 };
-                let peer_pad = match splitmuxsink.request_pad_simple(peer_pad_name) {
-                    None => return None,
-                    Some(pad) => pad,
-                };
-                let sink_pad = gst::GhostPad::from_template_with_target(&templ, Some(pad_name), &peer_pad).unwrap();
-                sink_pad.set_active(true).unwrap();
+                let peer_pad = splitmuxsink.request_pad_simple("video").unwrap();
 
+                let sink_pad = gst::GhostPad::from_template_with_target(&templ, Some("video"), &peer_pad).unwrap();
                 element.add_pad(&sink_pad).unwrap();
+                sink_pad.set_active(true).unwrap();
                 settings.video_sink = true;
 
                 Some(sink_pad.upcast())
             }
-            None => None,
+            None => {
+                gst_debug!(
+                    CAT,
+                    obj: element,
+                    "template name returned `None`",
+                );
+                None
+            },
             Some(other_name) => {
                 gst_debug!(
                     CAT,
