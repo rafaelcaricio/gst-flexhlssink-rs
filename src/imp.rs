@@ -1,3 +1,4 @@
+use gio::prelude::*;
 use glib::subclass::prelude::*;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
@@ -10,6 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path;
 use std::sync::{Arc, Mutex, MutexGuard};
+use gio::glib::WeakRef;
 
 const DEFAULT_LOCATION: &str = "segment%05d.ts";
 const DEFAULT_PLAYLIST_LOCATION: &str = "playlist.m3u8";
@@ -40,7 +42,7 @@ struct Settings {
 
     // TODO: old_locations ? Maybe just use another thread and send msgs with files to delete ?
     splitmuxsink: Option<gst::Element>,
-    app_sink: Option<gst::Element>,
+    giostreamsink: Option<gst::Element>,
     muxer: Option<gst::Element>,
     video_sink: bool,
     audio_sink: bool,
@@ -58,7 +60,7 @@ impl Default for Settings {
             send_keyframe_requests: DEFAULT_SEND_KEYFRAME_REQUESTS,
 
             splitmuxsink: None,
-            app_sink: None,
+            giostreamsink: None,
             muxer: None,
             video_sink: false,
             audio_sink: false,
@@ -110,17 +112,13 @@ impl FlexHlsSink {
             } => (current_segment_location, current_segment_file),
         };
 
-        let settings = self.settings.lock().unwrap();
+        let mut settings = self.settings.lock().unwrap();
 
         let seq_num = format!("{:0>5}", fragment_id);
         let segment_file_location = settings
             .location
             .replace(BACKWARDS_COMPATIBLE_PLACEHOLDER, &seq_num);
-        gst_trace!(
-            CAT,
-            "Segment location formatted: {}",
-            segment_file_location
-        );
+        gst_trace!(CAT, "Segment location formatted: {}", segment_file_location);
 
         let segment_file_location_clone = segment_file_location.clone();
         let segment_file = File::create(&segment_file_location).map_err(move |err| {
@@ -135,12 +133,33 @@ impl FlexHlsSink {
         *current_segment_location = Some(segment_file_location.clone());
         *current_segment_file = Some(segment_file);
 
+        let giostreamsink = settings.giostreamsink.as_ref().unwrap();
+        let stream = self
+            .get_fragment_stream(segment_file_location.clone())
+            .map_err(|err| err.to_string())?;
+        giostreamsink.set_property("stream", &stream).unwrap();
+
         gst_info!(
             CAT,
             "New segment location: {}",
             current_segment_location.as_ref().unwrap()
         );
         Ok(segment_file_location)
+    }
+
+    fn get_fragment_stream(&self, location: String) -> Result<gio::WriteOutputStream, glib::Error> {
+        let file_stream = File::create(&location).map_err(|err| {
+            glib::Error::new(
+                gst::URIError::BadReference,
+                format!(
+                    "Could create segment file {} for writing: {}",
+                    &location,
+                    err.to_string()
+                )
+                .as_str(),
+            )
+        })?;
+        Ok(gio::WriteOutputStream::new(file_stream))
     }
 
     fn start(
@@ -486,11 +505,9 @@ impl ObjectImpl for FlexHlsSink {
 
         let splitmuxsink = gst::ElementFactory::make("splitmuxsink", Some("split_mux_sink"))
             .expect("Could not make element splitmuxsink");
-        let app_sink = gst::ElementFactory::make("appsink", Some("giostreamsink_replacement_sink"))
-            .expect("Could not make element appsink");
-        // app_sink.set_property("sync", &false).unwrap();
-        // app_sink.set_property("async", &false).unwrap();
-        // app_sink.set_property("emit-signals", &true).unwrap();
+        let giostreamsink = gst::ElementFactory::make("giostreamsink", Some("giostream_sink"))
+            .expect("Could not make element giostreamsink");
+        giostreamsink.set_property("async", &false).unwrap();
 
         let mux = gst::ElementFactory::make("mpegtsmux", Some("mpeg-ts_mux"))
             .expect("Could not make element mpegtsmux");
@@ -505,9 +522,8 @@ impl ObjectImpl for FlexHlsSink {
                 ),
                 ("send-keyframe-requests", &true),
                 ("muxer", &mux),
-                ("sink", &app_sink),
+                ("sink", &giostreamsink),
                 ("reset-muxer", &false),
-                ("async-finalize", &false),
             ])
             .unwrap();
 
@@ -531,59 +547,11 @@ impl ObjectImpl for FlexHlsSink {
             })
             .unwrap();
 
-        let appsink = app_sink.downcast_ref::<gst_app::AppSink>().unwrap();
-        appsink.set_emit_signals(true);
-
-        appsink.connect_eos(|appsink| {
-            gst_info!(CAT, "Got EOS from giostreamsink_replacement_sink");
-        });
-
-        let this = self.clone();
-        let element_weak = obj.downgrade();
-        appsink.connect_new_sample(move |appsink| {
-            gst_info!(CAT, "Got new sample from giostreamsink_replacement_sink");
-
-            let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-            let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-
-            gst_info!(CAT, "Got new sample buffer[{}]", buffer.size());
-
-            let mut state = this.state.lock().unwrap();
-            let (current_segment_file, current_segment_location) = match &mut *state {
-                State::Stopped => return Err(gst::FlowError::Error),
-                State::Started {
-                    current_segment_file,
-                    current_segment_location,
-                    ..
-                } => (current_segment_file, current_segment_location),
-            };
-
-            if let (Some(segment_file), Some(segment_location)) =
-            (current_segment_file, current_segment_location)
-            {
-                let segment_location = segment_location.clone();
-                let data = buffer.map_readable().unwrap();
-                segment_file.write(&data).map_err(|err| {
-                    let error_msg = gst::error_msg!(
-                                gst::ResourceError::OpenWrite,
-                                [
-                                    "Could not write to segment file \"{}\": {}",
-                                    segment_location,
-                                    err.to_string(),
-                                ]
-                            );
-                    let element = element_weak.upgrade().unwrap();
-                    element.post_error_message(error_msg);
-
-                    gst::FlowError::Error
-                })?;
-            }
-
-            Ok(gst::FlowSuccess::Ok)
-        });
+        let temp_stream = gio::MemoryOutputStream::new_resizable();
+        giostreamsink.set_property("stream", &temp_stream).unwrap();
 
         settings.splitmuxsink = Some(splitmuxsink);
-        settings.app_sink = Some(app_sink);
+        settings.giostreamsink = Some(giostreamsink);
         settings.muxer = Some(mux);
     }
 }
@@ -679,7 +647,9 @@ impl ElementImpl for FlexHlsSink {
                     Some(sms) => sms,
                 };
                 let peer_pad = splitmuxsink.request_pad_simple("audio_0").unwrap();
-                let sink_pad = gst::GhostPad::from_template_with_target(&templ, Some("audio"), &peer_pad).unwrap();
+                let sink_pad =
+                    gst::GhostPad::from_template_with_target(&templ, Some("audio"), &peer_pad)
+                        .unwrap();
                 element.add_pad(&sink_pad).unwrap();
                 sink_pad.set_active(true).unwrap();
                 settings.audio_sink = true;
@@ -701,7 +671,9 @@ impl ElementImpl for FlexHlsSink {
                 };
                 let peer_pad = splitmuxsink.request_pad_simple("video").unwrap();
 
-                let sink_pad = gst::GhostPad::from_template_with_target(&templ, Some("video"), &peer_pad).unwrap();
+                let sink_pad =
+                    gst::GhostPad::from_template_with_target(&templ, Some("video"), &peer_pad)
+                        .unwrap();
                 element.add_pad(&sink_pad).unwrap();
                 sink_pad.set_active(true).unwrap();
                 settings.video_sink = true;
@@ -709,13 +681,9 @@ impl ElementImpl for FlexHlsSink {
                 Some(sink_pad.upcast())
             }
             None => {
-                gst_debug!(
-                    CAT,
-                    obj: element,
-                    "template name returned `None`",
-                );
+                gst_debug!(CAT, obj: element, "template name returned `None`",);
                 None
-            },
+            }
             Some(other_name) => {
                 gst_debug!(
                     CAT,

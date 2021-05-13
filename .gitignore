@@ -1,2 +1,4 @@
 /target
 Cargo.lock
+playlist.m3u8
+segment*

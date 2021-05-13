@@ -29,7 +29,7 @@ fn init() {
 fn test_basic_element_with_video_content() {
     init();
 
-    const BUFFER_NB: i32 = 200;
+    const BUFFER_NB: i32 = 100;
 
     let pipeline = gst::Pipeline::new(Some("video_pipeline"));
 
@@ -93,7 +93,7 @@ fn test_basic_element_with_video_content() {
         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
         let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
 
-        gst_info!(CAT, "TEST sample buffer[{}]", buffer.size());
+        //gst_info!(CAT, "TEST sample buffer[{}]", buffer.size());
 
         sender.send(()).unwrap();
         Ok(gst::FlowSuccess::Ok)
@@ -108,7 +108,7 @@ fn test_basic_element_with_video_content() {
     );
     for idx in 0..BUFFER_NB {
         receiver.recv().unwrap();
-        gst_info!(CAT, "flexhlssink_video_pipeline: received buffer #{}", idx);
+        //gst_info!(CAT, "flexhlssink_video_pipeline: received buffer #{}", idx);
     }
 
     pipeline.set_state(gst::State::Null).unwrap();
