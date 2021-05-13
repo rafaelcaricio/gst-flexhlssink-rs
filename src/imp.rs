@@ -703,15 +703,18 @@ impl ElementImpl for FlexHlsSink {
             return;
         }
 
-        settings
-            .splitmuxsink
-            .as_ref()
-            .unwrap()
-            .release_request_pad(pad);
+        let ghost_pad = pad.downcast_ref::<gst::GhostPad>().unwrap();
+        if let Some(peer) = ghost_pad.target() {
+            settings
+                .splitmuxsink
+                .as_ref()
+                .unwrap()
+                .release_request_pad(&peer);
+        }
+
         pad.set_active(false).unwrap();
         element.remove_pad(pad).unwrap();
 
-        let ghost_pad = pad.downcast_ref::<gst::GhostPad>().unwrap();
         if "audio" == ghost_pad.name() {
             settings.audio_sink = false;
         } else {
