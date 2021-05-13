@@ -488,9 +488,9 @@ impl ObjectImpl for FlexHlsSink {
             .expect("Could not make element splitmuxsink");
         let app_sink = gst::ElementFactory::make("appsink", Some("giostreamsink_replacement_sink"))
             .expect("Could not make element appsink");
-        app_sink.set_property("sync", &false).unwrap();
-        app_sink.set_property("async", &false).unwrap();
-        app_sink.set_property("emit-signals", &true).unwrap();
+        // app_sink.set_property("sync", &false).unwrap();
+        // app_sink.set_property("async", &false).unwrap();
+        // app_sink.set_property("emit-signals", &true).unwrap();
 
         let mux = gst::ElementFactory::make("mpegtsmux", Some("mpeg-ts_mux"))
             .expect("Could not make element mpegtsmux");
@@ -507,6 +507,7 @@ impl ObjectImpl for FlexHlsSink {
                 ("muxer", &mux),
                 ("sink", &app_sink),
                 ("reset-muxer", &false),
+                ("async-finalize", &false),
             ])
             .unwrap();
 
@@ -531,10 +532,17 @@ impl ObjectImpl for FlexHlsSink {
             .unwrap();
 
         let appsink = app_sink.downcast_ref::<gst_app::AppSink>().unwrap();
+        appsink.set_emit_signals(true);
+
+        appsink.connect_eos(|appsink| {
+            gst_info!(CAT, "Got EOS from giostreamsink_replacement_sink");
+        });
 
         let this = self.clone();
         let element_weak = obj.downgrade();
         appsink.connect_new_sample(move |appsink| {
+            gst_info!(CAT, "Got new sample from giostreamsink_replacement_sink");
+
             let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
             let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
 

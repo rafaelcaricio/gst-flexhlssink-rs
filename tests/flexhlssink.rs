@@ -29,7 +29,7 @@ fn init() {
 fn test_basic_element_with_video_content() {
     init();
 
-    const BUFFER_NB: i32 = 500;
+    const BUFFER_NB: i32 = 200;
 
     let pipeline = gst::Pipeline::new(Some("video_pipeline"));
 
@@ -48,10 +48,9 @@ fn test_basic_element_with_video_content() {
     // 6 - 391
 
     let app_queue = gst::ElementFactory::make("queue", Some("test_app_queue")).unwrap();
-    let app_sink = gst::ElementFactory::make("appsink", Some("test_appsink")).unwrap();
+    let app_sink = gst::ElementFactory::make("appsink", Some("test_sink")).unwrap();
     app_sink.set_property("sync", &false).unwrap();
     app_sink.set_property("async", &false).unwrap();
-    app_sink.set_property("emit-signals", &true).unwrap();
 
     pipeline
         .add_many(&[
@@ -88,6 +87,7 @@ fn test_basic_element_with_video_content() {
 
 
     let appsink = app_sink.dynamic_cast::<gst_app::AppSink>().unwrap();
+    appsink.set_emit_signals(true);
     let (sender, receiver) = mpsc::channel();
     appsink.connect_new_sample(move |appsink| {
         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
