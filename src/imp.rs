@@ -71,7 +71,7 @@ enum State {
         playlist_index: u32,
 
         current_segment_file: Option<File>,
-        current_running_time_start: Option<gst::ClockTime>,
+        fragment_opened_at: Option<gst::ClockTime>,
         current_segment_location: Option<String>,
     },
 }
@@ -124,7 +124,7 @@ impl FlexHlsSink {
                 playlist_render_state: PlaylistRenderState::Init,
                 playlist_index: 0,
                 current_segment_location: None,
-                current_running_time_start: None,
+                fragment_opened_at: None,
                 current_segment_file: None,
             };
         }
@@ -210,7 +210,7 @@ impl FlexHlsSink {
         match &mut *state {
             State::Stopped => {}
             State::Started {
-                current_running_time_start,
+                fragment_opened_at,
                 playlist,
                 current_segment_location,
                 playlist_render_state,
@@ -223,8 +223,10 @@ impl FlexHlsSink {
                     .as_ref()
                     .ok_or_else(|| gst::StateChangeError)?;
 
-                let segment_duration =
-                    fragment_closed_at - current_running_time_start.as_ref().unwrap();
+                let segment_duration = fragment_closed_at
+                    - fragment_opened_at
+                        .as_ref()
+                        .ok_or_else(|| gst::StateChangeError)?;
 
                 playlist.segments.push(MediaSegment {
                     uri: segment_location.to_string(),
@@ -319,12 +321,15 @@ impl BinImpl for FlexHlsSink {
 
         match msg.view() {
             MessageView::Element(ref msg) => {
-                let settings = self.settings.lock().unwrap();
+                let event_is_from_splitmuxsink = {
+                    let settings = self.settings.lock().unwrap();
 
-                if settings.splitmuxsink.is_some()
-                    && msg.src().as_ref()
-                        == Some(settings.splitmuxsink.as_ref().unwrap().upcast_ref())
-                {
+                    settings.splitmuxsink.is_some()
+                        && msg.src().as_ref()
+                            == Some(settings.splitmuxsink.as_ref().unwrap().upcast_ref())
+                };
+
+                if event_is_from_splitmuxsink {
                     let s = msg.structure().unwrap();
                     match s.name() {
                         "splitmuxsink-fragment-opened" => {
@@ -334,7 +339,7 @@ impl BinImpl for FlexHlsSink {
                                 match &mut *state {
                                     State::Stopped => return,
                                     State::Started {
-                                        current_running_time_start,
+                                        fragment_opened_at: current_running_time_start,
                                         ..
                                     } => *current_running_time_start = Some(fragment_opened_at),
                                 };

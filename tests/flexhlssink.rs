@@ -29,7 +29,7 @@ fn init() {
 fn test_basic_element_with_video_content() {
     init();
 
-    const BUFFER_NB: i32 = 200;
+    const BUFFER_NB: i32 = 600;
 
     let pipeline = gst::Pipeline::new(Some("video_pipeline"));
 
@@ -44,8 +44,6 @@ fn test_basic_element_with_video_content() {
     let hls_queue = gst::ElementFactory::make("queue", Some("test_hls_queue")).unwrap();
     let flexhlssink = gst::ElementFactory::make("flexhlssink", Some("test_flexhlssink")).unwrap();
     flexhlssink.set_property("target-duration", &6u32).unwrap();
-    // 4 - 271
-    // 6 - 391
 
     let app_queue = gst::ElementFactory::make("queue", Some("test_app_queue")).unwrap();
     let app_sink = gst::ElementFactory::make("appsink", Some("test_sink")).unwrap();
