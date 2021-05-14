@@ -11,6 +11,7 @@ Progress:
 - [x] Write HLS playlist m3u8 file;
 - [ ] Signal to acquire segment stream;
 - [ ] Signal to acquire HLS playlist stream;
+- [ ] Delete old segments;
 
 ## Example Usage
 
