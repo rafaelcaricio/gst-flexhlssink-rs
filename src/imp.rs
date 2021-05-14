@@ -612,19 +612,21 @@ impl ElementImpl for FlexHlsSink {
         match transition {
             gst::StateChange::PausedToReady => {
                 // Turning down
-                let mut state = self.state.lock().unwrap();
-                let write_final = match &mut *state {
-                    State::Stopped => false,
-                    State::Started {
-                        playlist,
-                        playlist_render_state,
-                        ..
-                    } => {
-                        if *playlist_render_state == PlaylistRenderState::Started {
-                            playlist.end_list = true;
-                            true
-                        } else {
-                            false
+                let write_final = {
+                    let mut state = self.state.lock().unwrap();
+                    match &mut *state {
+                        State::Stopped => false,
+                        State::Started {
+                            playlist,
+                            playlist_render_state,
+                            ..
+                        } => {
+                            if *playlist_render_state == PlaylistRenderState::Started {
+                                playlist.end_list = true;
+                                true
+                            } else {
+                                false
+                            }
                         }
                     }
                 };
