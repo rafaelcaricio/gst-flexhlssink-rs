@@ -18,7 +18,7 @@ After [installing GStreamer](https://gitlab.freedesktop.org/gstreamer/gstreamer-
 , it is possible to compile and run the `flexhlsplugin`.
 
 ```bash
-cargo build
+cargo build --release
 ```
 
 On MacOS it might be necessary to set the `PKG_CONFIG_PATH` environment variable:
@@ -31,7 +31,7 @@ An example pipeline:
 export PROJECT_DIR=`pwd`
 gst-launch-1.0 videotestsrc is-live=true ! \
     x264enc ! h264parse ! flexhlssink target-duration=4 \
-    --gst-plugin-load=${PROJECT_DIR}/target/debug/libflexhlssink.dylib
+    --gst-plugin-load=${PROJECT_DIR}/target/release/libflexhlssink.dylib
 ```
 
 In another terminal run a simple HTTP server:
