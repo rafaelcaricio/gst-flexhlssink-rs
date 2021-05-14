@@ -21,13 +21,13 @@ After [installing GStreamer](https://gitlab.freedesktop.org/gstreamer/gstreamer-
 cargo build
 ```
 
-Under MacOS it might be necessary to set the `PKG_CONFIG_PATH` environment variable:
-```
+On MacOS it might be necessary to set the `PKG_CONFIG_PATH` environment variable:
+```bash
 export PKG_CONFIG_PATH="/Library/Frameworks/GStreamer.framework/Versions/Current/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 ```
 
 An example pipeline:
-```
+```bash
 export PROJECT_DIR=`pwd`
 gst-launch-1.0 videotestsrc is-live=true ! \
     x264enc ! h264parse ! flexhlssink target-duration=4 \
@@ -35,7 +35,7 @@ gst-launch-1.0 videotestsrc is-live=true ! \
 ```
 
 In another terminal run a simple HTTP server:
-```
+```bash
 cd $PROJECT_DIR
 python simple_http.py
 ```
