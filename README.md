@@ -11,3 +11,33 @@ Progress:
 - [x] Write HLS playlist m3u8 file;
 - [ ] Signal to acquire segment stream;
 - [ ] Signal to acquire HLS playlist stream;
+
+## Example Usage
+
+After [installing GStreamer](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs#installation)
+, it is possible to compile and run the `flexhlsplugin`.
+
+```bash
+cargo build
+```
+
+Under MacOS it might be necessary to set the `PKG_CONFIG_PATH` environment variable:
+```
+export PKG_CONFIG_PATH="/Library/Frameworks/GStreamer.framework/Versions/Current/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+```
+
+An example pipeline:
+```
+export PROJECT_DIR=`pwd`
+gst-launch-1.0 videotestsrc is-live=true ! \
+    x264enc ! h264parse ! flexhlssink target-duration=4 \
+    --gst-plugin-load=${PROJECT_DIR}/target/debug/libflexhlssink.dylib
+```
+
+In another terminal run a simple HTTP server:
+```
+cd $PROJECT_DIR
+python simple_http.py
+```
+
+Open the example player site https://hls-js.netlify.app/demo/ and play the `http://localhost:8000/playlist.m3u8` playback URL.
