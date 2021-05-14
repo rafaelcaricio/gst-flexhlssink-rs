@@ -12,6 +12,7 @@ impl MediaPlaylist {
     }
 }
 
+#[derive(Copy, Clone, PartialEq)]
 pub enum PlaylistRenderState {
     Init,
     Started,

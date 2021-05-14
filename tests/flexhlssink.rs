@@ -29,7 +29,7 @@ fn init() {
 fn test_basic_element_with_video_content() {
     init();
 
-    const BUFFER_NB: i32 = 100;
+    const BUFFER_NB: i32 = 200;
 
     let pipeline = gst::Pipeline::new(Some("video_pipeline"));
 
