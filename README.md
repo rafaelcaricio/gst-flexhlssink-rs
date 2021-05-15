@@ -7,11 +7,12 @@ The plugin is in **active development**. The first release objective is to have 
 
 Progress:
 - [x] Support all properties exposed by the `hlssink2` plugin;
-- [x] Write TS segments to segment stream (defaults to filesystem);
+- [x] Write TS content to fragment stream (defaults to filesystem);
 - [x] Write HLS playlist m3u8 file;
-- [ ] Signal to acquire segment stream;
+- [ ] Delete old fragments;
+- [ ] Signal to acquire fragment stream;
 - [ ] Signal to acquire HLS playlist stream;
-- [ ] Delete old segments;
+- [ ] Signal to delete a fragment file;
 
 ## Example Usage
 

@@ -4,7 +4,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst::{gst_debug, gst_error, gst_info, gst_trace};
 
-use crate::playlist::PlaylistRenderState;
+use crate::{output::StreamWriter, playlist::PlaylistRenderState};
 use m3u8_rs::playlist::{MediaPlaylist, MediaPlaylistType, MediaSegment};
 use once_cell::sync::Lazy;
 use std::fs::{File, OpenOptions};
@@ -133,7 +133,11 @@ impl FlexHlsSink {
         Ok(gst::StateChangeSuccess::Success)
     }
 
-    fn on_format_location(&self, fragment_id: u32) -> Result<String, String> {
+    fn on_format_location(
+        &self,
+        element: &super::FlexHlsSink,
+        fragment_id: u32,
+    ) -> Result<String, String> {
         gst_info!(
             CAT,
             "Starting the formatting of the fragment-id: {}",
@@ -158,13 +162,8 @@ impl FlexHlsSink {
             .replace(BACKWARDS_COMPATIBLE_PLACEHOLDER, &seq_num);
         gst_trace!(CAT, "Segment location formatted: {}", segment_file_location);
 
-        let segment_file_location_clone = segment_file_location.clone();
         let segment_file = File::create(&segment_file_location).map_err(move |err| {
-            gst_error!(
-                CAT,
-                "Could not create a new segment file: {}",
-                segment_file_location_clone
-            );
+            gst_error!(CAT, "Could not create a new segment file");
             err.to_string()
         })?;
 
@@ -172,8 +171,9 @@ impl FlexHlsSink {
         *current_segment_file = Some(segment_file);
 
         let giostreamsink = settings.giostreamsink.as_ref().unwrap();
+        // TODO: this should be a call to the signal exposed by this plugin
         let stream = self
-            .get_fragment_stream(&segment_file_location)
+            .get_fragment_stream(element, &segment_file_location)
             .map_err(|err| err.to_string())?;
         giostreamsink.set_property("stream", &stream).unwrap();
 
@@ -185,22 +185,45 @@ impl FlexHlsSink {
         Ok(segment_file_location)
     }
 
-    fn get_fragment_stream<P>(&self, location: &P) -> Result<gio::WriteOutputStream, glib::Error>
+    fn get_fragment_stream<P>(
+        &self,
+        element: &super::FlexHlsSink,
+        location: &P,
+    ) -> Result<gio::WriteOutputStream, String>
     where
         P: AsRef<path::Path>,
     {
-        let file_stream = File::create(location).map_err(|err| {
-            glib::Error::new(
-                gst::URIError::BadReference,
-                format!(
-                    "Could create segment file {} for writing: {}",
-                    location.as_ref().to_str().unwrap(),
-                    err.to_string()
-                )
-                .as_str(),
-            )
-        })?;
+        let file_stream = File::create(location).map_err(|err| err.to_string())?;
         Ok(gio::WriteOutputStream::new(file_stream))
+    }
+
+    fn get_playlist_stream<P>(
+        &self,
+        element: &super::FlexHlsSink,
+        location: &P,
+    ) -> Result<gio::WriteOutputStream, String>
+    where
+        P: AsRef<path::Path>,
+    {
+        let element_weak = element.downgrade();
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(location)
+            .map_err(move |err| {
+                let error_msg = gst::error_msg!(
+                    gst::ResourceError::OpenWrite,
+                    [
+                        "Could not open playlist file {} for writing: {}",
+                        location.as_ref().to_str().unwrap(),
+                        err.to_string(),
+                    ]
+                );
+                let element = element_weak.upgrade().unwrap();
+                element.post_error_message(error_msg);
+                err.to_string()
+            })?;
+        Ok(gio::WriteOutputStream::new(file))
     }
 
     fn write_playlist(
@@ -218,6 +241,7 @@ impl FlexHlsSink {
                 playlist,
                 current_segment_location,
                 playlist_render_state,
+                playlist_index,
                 ..
             } => {
                 gst_info!(CAT, "COUNT {}", playlist.segments.len());
@@ -244,31 +268,20 @@ impl FlexHlsSink {
                     daterange: None,
                 });
 
-                // TODO: Write playlist to fs
-                let settings = self.settings.lock().unwrap();
-                let playlist_location = settings.playlist_location.clone();
+                *playlist_index += 1;
+                playlist.media_sequence = *playlist_index as i32 - playlist.segments.len() as i32;
 
-                let element_weak = element.downgrade();
-                let mut playlist_file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .open(playlist_location.clone())
-                    .map_err(move |err| {
-                        let error_msg = gst::error_msg!(
-                            gst::ResourceError::OpenWrite,
-                            [
-                                "Could not open playlist file {} for writing: {}",
-                                playlist_location,
-                                err.to_string(),
-                            ]
-                        );
-                        let element = element_weak.upgrade().unwrap();
-                        element.post_error_message(error_msg);
+                let playlist_location = {
+                    let settings = self.settings.lock().unwrap();
+                    settings.playlist_location.clone()
+                };
+                // TODO: this should be a call to the signal exposed by this plugin
+                let playlist_file = self
+                    .get_playlist_stream(&element, &playlist_location)
+                    .map_err(|_| gst::StateChangeError)?;
 
-                        gst::StateChangeError
-                    })?;
-
-                playlist.write_to(&mut playlist_file).map_err(|err| {
+                let mut playlist_stream = StreamWriter(playlist_file);
+                playlist.write_to(&mut playlist_stream).map_err(|err| {
                     gst_error!(
                         CAT,
                         "Could not write new playlist file: {}",
@@ -277,8 +290,10 @@ impl FlexHlsSink {
                     gst::StateChangeError
                 })?;
 
-                // TODO: clean up (delete) old segment files
                 *playlist_render_state = PlaylistRenderState::Started;
+
+                // TODO: clean up (delete) old segment files
+
                 *current_segment_location = None;
             }
         };
@@ -337,15 +352,15 @@ impl BinImpl for FlexHlsSink {
                     let s = msg.structure().unwrap();
                     match s.name() {
                         "splitmuxsink-fragment-opened" => {
-                            if let Ok(fragment_opened_at) = s.get::<gst::ClockTime>("running-time")
+                            if let Ok(new_fragment_opened_at) =
+                                s.get::<gst::ClockTime>("running-time")
                             {
                                 let mut state = self.state.lock().unwrap();
                                 match &mut *state {
                                     State::Stopped => return,
                                     State::Started {
-                                        fragment_opened_at: current_running_time_start,
-                                        ..
-                                    } => *current_running_time_start = Some(fragment_opened_at),
+                                        fragment_opened_at, ..
+                                    } => *fragment_opened_at = Some(new_fragment_opened_at),
                                 };
                             }
                         }
@@ -538,13 +553,15 @@ impl ObjectImpl for FlexHlsSink {
         obj.add(&splitmuxsink).unwrap();
 
         let this = self.clone();
+        let element_weak = obj.downgrade();
         splitmuxsink
             .connect("format-location", false, move |args| {
                 let fragment_id = args[1].get::<u32>().unwrap();
 
                 gst_info!(CAT, "Got fragment-id: {}", fragment_id);
 
-                match this.on_format_location(fragment_id) {
+                let element = element_weak.upgrade().unwrap();
+                match this.on_format_location(&element, fragment_id) {
                     Ok(segment_location) => Some(segment_location.to_value()),
                     Err(err) => {
                         gst_error!(CAT, "on format-location handler: {}", err);
@@ -566,7 +583,9 @@ impl ElementImpl for FlexHlsSink {
                 "Flexible HTTP Live Streaming sink",
                 "Sink/Muxer",
                 "Flexible HTTP Live Streaming sink",
-                "Alessandro Decina <alessandro.d@gmail.com>, Sebastian Dröge <sebastian@centricular.com>, Rafael Caricio <rafael@caricio.com>",
+                "Alessandro Decina <alessandro.d@gmail.com>, \
+                Sebastian Dröge <sebastian@centricular.com>, \
+                Rafael Caricio <rafael@caricio.com>",
             )
         });
 

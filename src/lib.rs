@@ -1,6 +1,7 @@
 use glib::prelude::*;
 
 mod imp;
+mod output;
 mod playlist;
 
 glib::wrapper! {
