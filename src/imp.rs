@@ -8,6 +8,7 @@ use crate::playlist::PlaylistRenderState;
 use m3u8_rs::playlist::{MediaPlaylist, MediaPlaylistType, MediaSegment};
 use once_cell::sync::Lazy;
 use std::fs::{File, OpenOptions};
+use std::path;
 use std::sync::{Arc, Mutex};
 
 const DEFAULT_LOCATION: &str = "segment%05d.ts";
@@ -172,7 +173,7 @@ impl FlexHlsSink {
 
         let giostreamsink = settings.giostreamsink.as_ref().unwrap();
         let stream = self
-            .get_fragment_stream(segment_file_location.clone())
+            .get_fragment_stream(&segment_file_location)
             .map_err(|err| err.to_string())?;
         giostreamsink.set_property("stream", &stream).unwrap();
 
@@ -184,13 +185,16 @@ impl FlexHlsSink {
         Ok(segment_file_location)
     }
 
-    fn get_fragment_stream(&self, location: String) -> Result<gio::WriteOutputStream, glib::Error> {
-        let file_stream = File::create(&location).map_err(|err| {
+    fn get_fragment_stream<P>(&self, location: &P) -> Result<gio::WriteOutputStream, glib::Error>
+    where
+        P: AsRef<path::Path>,
+    {
+        let file_stream = File::create(location).map_err(|err| {
             glib::Error::new(
                 gst::URIError::BadReference,
                 format!(
                     "Could create segment file {} for writing: {}",
-                    &location,
+                    location.as_ref().to_str().unwrap(),
                     err.to_string()
                 )
                 .as_str(),

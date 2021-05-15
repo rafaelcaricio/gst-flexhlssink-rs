@@ -36,7 +36,7 @@ fn test_basic_element_with_video_content() {
     let video_src = gst::ElementFactory::make("videotestsrc", Some("test_videotestsrc")).unwrap();
     video_src.set_property("is-live", &true).unwrap();
 
-    let x264enc= gst::ElementFactory::make("x264enc", Some("test_x264enc")).unwrap();
+    let x264enc = gst::ElementFactory::make("x264enc", Some("test_x264enc")).unwrap();
     let h264parse = gst::ElementFactory::make("h264parse", Some("test_h264parse")).unwrap();
 
     let tee = gst::ElementFactory::make("tee", Some("test_tee")).unwrap();
@@ -63,12 +63,7 @@ fn test_basic_element_with_video_content() {
         ])
         .unwrap();
 
-    gst::Element::link_many(&[
-        &video_src,
-        &x264enc,
-        &h264parse,
-        &tee,
-    ]).unwrap();
+    gst::Element::link_many(&[&video_src, &x264enc, &h264parse, &tee]).unwrap();
 
     gst::Element::link_many(&[&app_queue, &app_sink]).unwrap();
     gst::Element::link_many(&[&hls_queue, &flexhlssink]).unwrap();
@@ -82,7 +77,6 @@ fn test_basic_element_with_video_content() {
     let tee_hls_pad = tee.request_pad_simple("src_%u").unwrap();
     let hls_queue_pad = hls_queue.static_pad("sink").unwrap();
     tee_hls_pad.link(&hls_queue_pad).unwrap();
-
 
     let appsink = app_sink.dynamic_cast::<gst_app::AppSink>().unwrap();
     appsink.set_emit_signals(true);
@@ -112,7 +106,6 @@ fn test_basic_element_with_video_content() {
     pipeline.set_state(gst::State::Null).unwrap();
 }
 
-
 #[test]
 fn test_basic_element_properties() {
     init();
@@ -124,7 +117,6 @@ fn test_basic_element_properties() {
     let audio_src = gst::ElementFactory::make("audiotestsrc", Some("audiotestsrc")).unwrap();
     audio_src.set_property("is-live", &true).unwrap();
     audio_src.set_property("num-buffers", &BUFFER_NB).unwrap();
-
 
     let tee = gst::ElementFactory::make("tee", Some("tee")).unwrap();
 
@@ -181,11 +173,7 @@ fn test_basic_element_properties() {
 
     pipeline.set_state(gst::State::Playing).unwrap();
 
-    gst_info!(
-        CAT,
-        "audio_pipeline: waiting for {} buffers",
-        BUFFER_NB
-    );
+    gst_info!(CAT, "audio_pipeline: waiting for {} buffers", BUFFER_NB);
     for idx in 0..BUFFER_NB {
         receiver.recv().unwrap();
         gst_info!(CAT, "audio_pipeline: received buffer #{}", idx);
