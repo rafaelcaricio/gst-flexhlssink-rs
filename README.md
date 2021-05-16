@@ -9,7 +9,7 @@ Progress:
 - [x] Support all properties exposed by the `hlssink2` plugin;
 - [x] Write TS content to fragment stream (defaults to filesystem);
 - [x] Write HLS playlist m3u8 file;
-- [ ] Delete old fragments;
+- [x] Delete old fragments;
 - [ ] Signal to acquire fragment stream;
 - [ ] Signal to acquire HLS playlist stream;
 - [ ] Signal to delete a fragment file;

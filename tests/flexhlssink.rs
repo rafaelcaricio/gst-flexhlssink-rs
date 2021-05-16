@@ -110,7 +110,7 @@ fn test_basic_element_with_video_content() {
 fn test_basic_element_properties() {
     init();
 
-    const BUFFER_NB: i32 = 3;
+    const BUFFER_NB: i32 = 200;
 
     let pipeline = gst::Pipeline::new(Some("audio_pipeline"));
 
