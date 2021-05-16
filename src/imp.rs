@@ -4,7 +4,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst::{gst_debug, gst_error, gst_info, gst_trace, gst_warning};
 
-use crate::{output::StreamWriter, playlist::PlaylistRenderState};
+use crate::playlist::PlaylistRenderState;
 use m3u8_rs::playlist::{MediaPlaylist, MediaPlaylistType, MediaSegment};
 use once_cell::sync::Lazy;
 use std::fs;
@@ -182,7 +182,7 @@ impl FlexHlsSink {
         &self,
         element: &super::FlexHlsSink,
         location: &P,
-    ) -> Result<gio::WriteOutputStream, String>
+    ) -> Result<gio::OutputStream, String>
     where
         P: AsRef<path::Path>,
     {
@@ -204,7 +204,7 @@ impl FlexHlsSink {
                 element.post_error_message(error_msg);
                 err.to_string()
             })?;
-        Ok(gio::WriteOutputStream::new(file))
+        Ok(gio::WriteOutputStream::new(file).upcast())
     }
 
     fn write_playlist(
@@ -272,12 +272,12 @@ impl FlexHlsSink {
                 playlist.media_sequence = *playlist_index as i32 - playlist.segments.len() as i32;
 
                 // TODO: this should be a call to the signal exposed by this plugin
-                let playlist_file = self
+                let mut playlist_file = self
                     .new_file_stream(&element, &playlist_location)
-                    .map_err(|_| gst::StateChangeError)?;
+                    .map_err(|_| gst::StateChangeError)?
+                    .into_write();
 
-                let mut playlist_stream = StreamWriter(playlist_file);
-                playlist.write_to(&mut playlist_stream).map_err(|err| {
+                playlist.write_to(&mut playlist_file).map_err(|err| {
                     gst_error!(
                         CAT,
                         "Could not write new playlist file: {}",
