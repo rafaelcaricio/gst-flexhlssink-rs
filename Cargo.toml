@@ -5,6 +5,7 @@ repository = "https://github.com/rafaelcaricio/gst-flexhlssink-rs"
 version = "0.1.0"
 authors = ["Rafael Caricio <rafael@caricio.com>"]
 edition = "2018"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "flexhlssink"
