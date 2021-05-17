@@ -5,9 +5,10 @@ use gst::subclass::prelude::*;
 use gst::{gst_debug, gst_error, gst_info, gst_trace, gst_warning};
 
 use crate::playlist::PlaylistRenderState;
-use m3u8_rs::playlist::{MediaPlaylist, MediaPlaylistType, MediaSegment};
+use m3u8_rs::playlist::{MediaPlaylist, MediaSegment};
 use once_cell::sync::Lazy;
 use std::fs;
+use std::io::Write;
 use std::path;
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +21,10 @@ const DEFAULT_SEND_KEYFRAME_REQUESTS: bool = true;
 
 const GST_M3U8_PLAYLIST_VERSION: usize = 3;
 const BACKWARDS_COMPATIBLE_PLACEHOLDER: &str = "%05d";
+
+const SIGNAL_GET_PLAYLIST_STREAM: &str = "get-playlist-stream";
+const SIGNAL_GET_FRAGMENT_STREAM: &str = "get-fragment-stream";
+const SIGNAL_DELETE_FRAGMENT: &str = "delete-fragment";
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
@@ -116,7 +121,7 @@ impl FlexHlsSink {
                     segments: vec![],
                     discontinuity_sequence: 0,
                     end_list: false,
-                    playlist_type: Some(MediaPlaylistType::Vod),
+                    playlist_type: None,
                     i_frames_only: false,
                     start: None,
                     independent_segments: false,
@@ -163,12 +168,17 @@ impl FlexHlsSink {
 
         *current_segment_location = Some(segment_file_location.clone());
 
-        // TODO: this should be a call to the signal exposed by this plugin
-        let stream = self
-            .new_file_stream(element, &segment_file_location)
+        let fragment_stream = element
+            .emit_by_name(SIGNAL_GET_FRAGMENT_STREAM, &[&segment_file_location])
+            .expect("Error while getting fragment stream")
+            .unwrap()
+            .get::<gio::OutputStream>()
             .map_err(|err| err.to_string())?;
+
         let giostreamsink = settings.giostreamsink.as_ref().unwrap();
-        giostreamsink.set_property("stream", &stream).unwrap();
+        giostreamsink
+            .set_property("stream", &fragment_stream)
+            .unwrap();
 
         gst_info!(
             CAT,
@@ -207,10 +217,19 @@ impl FlexHlsSink {
         Ok(gio::WriteOutputStream::new(file).upcast())
     }
 
+    fn delete_fragment<P>(&self, location: &P)
+    where
+        P: AsRef<path::Path>,
+    {
+        let _ = fs::remove_file(location).map_err(|err| {
+            gst_warning!(CAT, "Could not delete segment file: {}", err.to_string());
+        });
+    }
+
     fn write_playlist(
         &self,
         element: &super::FlexHlsSink,
-        fragment_closed_at: gst::ClockTime,
+        fragment_closed_at: Option<gst::ClockTime>,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
         gst_info!(CAT, obj: element, "Preparing to write new playlist");
 
@@ -227,30 +246,35 @@ impl FlexHlsSink {
                 ..
             } => {
                 gst_info!(CAT, "COUNT {}", playlist.segments.len());
-                // TODO: Add new entry to the playlist
 
-                let segment_location = current_segment_location
-                    .take()
-                    .ok_or_else(|| gst::StateChangeError)?;
+                // Only add fragment if it's complete.
+                if let Some(fragment_closed_at) = fragment_closed_at {
+                    let segment_location = current_segment_location
+                        .take()
+                        .ok_or(gst::StateChangeError)?;
 
-                playlist.segments.push(MediaSegment {
-                    uri: segment_location.clone(),
-                    duration: {
-                        let fragment_opened_at =
-                            fragment_opened_at.as_ref().ok_or(gst::StateChangeError)?;
+                    playlist.segments.push(MediaSegment {
+                        uri: segment_location.clone(),
+                        duration: {
+                            let fragment_opened_at =
+                                fragment_opened_at.as_ref().ok_or(gst::StateChangeError)?;
 
-                        let segment_duration = fragment_closed_at - fragment_opened_at;
+                            let segment_duration = fragment_closed_at - fragment_opened_at;
 
-                        segment_duration.seconds().ok_or(gst::StateChangeError)? as f32
-                    },
-                    title: None,
-                    byte_range: None,
-                    discontinuity: false,
-                    key: None,
-                    map: None,
-                    program_date_time: None,
-                    daterange: None,
-                });
+                            segment_duration.mseconds().ok_or(gst::StateChangeError)? as f32
+                                / 1_000f32
+                        },
+                        title: None,
+                        byte_range: None,
+                        discontinuity: false,
+                        key: None,
+                        map: None,
+                        program_date_time: None,
+                        daterange: None,
+                    });
+
+                    old_segment_locations.push(segment_location);
+                }
 
                 let (playlist_location, max_num_segments, max_playlist_length) = {
                     let settings = self.settings.lock().unwrap();
@@ -271,31 +295,35 @@ impl FlexHlsSink {
                 *playlist_index += 1;
                 playlist.media_sequence = *playlist_index as i32 - playlist.segments.len() as i32;
 
-                // TODO: this should be a call to the signal exposed by this plugin
-                let mut playlist_file = self
-                    .new_file_stream(&element, &playlist_location)
-                    .map_err(|_| gst::StateChangeError)?
+                let mut playlist_stream = element
+                    .emit_by_name(SIGNAL_GET_PLAYLIST_STREAM, &[&playlist_location])
+                    .expect("Error while getting playlist stream")
+                    .ok_or(gst::StateChangeError)?
+                    .get::<gio::OutputStream>()
+                    .map_err(|err| {
+                        gst_error!(
+                            CAT,
+                            "Could not get stream to write playlist content: {}",
+                            err.to_string()
+                        );
+                        gst::StateChangeError
+                    })?
                     .into_write();
 
-                playlist.write_to(&mut playlist_file).map_err(|err| {
-                    gst_error!(
-                        CAT,
-                        "Could not write new playlist file: {}",
-                        err.to_string()
-                    );
+                playlist.write_to(&mut playlist_stream).map_err(|err| {
+                    gst_error!(CAT, "Could not write new playlist: {}", err.to_string());
                     gst::StateChangeError
                 })?;
+                let _ = playlist_stream.flush().unwrap();
 
                 *playlist_render_state = PlaylistRenderState::Started;
 
-                old_segment_locations.push(segment_location);
                 if old_segment_locations.len() > max_num_segments {
                     for _ in 0..old_segment_locations.len() - max_num_segments {
                         let old_segment_location = old_segment_locations.remove(0);
-                        // TODO: trigger event to delete segment location
-                        let _ = fs::remove_file(&old_segment_location).map_err(|err| {
-                            gst_warning!(CAT, "Could not delete segment file: {}", err.to_string());
-                        });
+                        let _ = element
+                            .emit_by_name(SIGNAL_DELETE_FRAGMENT, &[&old_segment_location])
+                            .expect("Error while processing signal handler");
                     }
                 }
             }
@@ -310,7 +338,7 @@ impl FlexHlsSink {
         element: &super::FlexHlsSink,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
         gst_debug!(CAT, obj: element, "Preparing to write final playlist");
-        Ok(self.write_playlist(element, element.current_running_time())?)
+        self.write_playlist(element, None)
     }
 
     fn stop(&self, element: &super::FlexHlsSink) {
@@ -371,7 +399,8 @@ impl BinImpl for FlexHlsSink {
                             let s = msg.structure().unwrap();
                             if let Ok(fragment_closed_at) = s.get::<gst::ClockTime>("running-time")
                             {
-                                self.write_playlist(element, fragment_closed_at).unwrap();
+                                self.write_playlist(element, Some(fragment_closed_at))
+                                    .unwrap();
                             }
                         }
                         _ => {}
@@ -446,6 +475,74 @@ impl ObjectImpl for FlexHlsSink {
         });
 
         PROPERTIES.as_ref()
+    }
+
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: Lazy<Vec<glib::subclass::Signal>> = Lazy::new(|| {
+            vec![
+                glib::subclass::Signal::builder(
+                    SIGNAL_GET_PLAYLIST_STREAM,
+                    &[String::static_type().into()],
+                    gio::OutputStream::static_type().into(),
+                )
+                .action()
+                .class_handler(|_, args| {
+                    let element = args[0]
+                        .get::<super::FlexHlsSink>()
+                        .expect("playlist-stream signal arg");
+                    let playlist_location =
+                        args[1].get::<String>().expect("playlist-stream signal arg");
+                    let flexhlssink = FlexHlsSink::from_instance(&element);
+
+                    Some(
+                        flexhlssink
+                            .new_file_stream(&element, &playlist_location)
+                            .ok()?
+                            .to_value(),
+                    )
+                })
+                .build(),
+                glib::subclass::Signal::builder(
+                    SIGNAL_GET_FRAGMENT_STREAM,
+                    &[String::static_type().into()],
+                    gio::OutputStream::static_type().into(),
+                )
+                .action()
+                .class_handler(|_, args| {
+                    let element = args[0]
+                        .get::<super::FlexHlsSink>()
+                        .expect("fragment-stream signal arg");
+                    let fragment_location =
+                        args[1].get::<String>().expect("fragment-stream signal arg");
+                    let flexhlssink = FlexHlsSink::from_instance(&element);
+
+                    Some(
+                        flexhlssink
+                            .new_file_stream(&element, &fragment_location)
+                            .ok()?
+                            .to_value(),
+                    )
+                })
+                .build(),
+                glib::subclass::Signal::builder(
+                    SIGNAL_DELETE_FRAGMENT,
+                    &[String::static_type().into()],
+                    glib::types::Type::UNIT.into(),
+                )
+                .action()
+                .class_handler(|_, args| {
+                    let element = args[0].get::<super::FlexHlsSink>().expect("signal arg");
+                    let fragment_location = args[1].get::<String>().expect("signal arg");
+                    let flexhlssink = FlexHlsSink::from_instance(&element);
+
+                    flexhlssink.delete_fragment(&fragment_location);
+                    None
+                })
+                .build(),
+            ]
+        });
+
+        SIGNALS.as_ref()
     }
 
     fn set_property(
@@ -630,11 +727,8 @@ impl ElementImpl for FlexHlsSink {
         element: &Self::Type,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        match transition {
-            gst::StateChange::NullToReady => {
-                self.start(element)?;
-            }
-            _ => (),
+        if let gst::StateChange::NullToReady = transition {
+            self.start(element)?;
         }
 
         let ret = self.parent_change_state(element, transition)?;

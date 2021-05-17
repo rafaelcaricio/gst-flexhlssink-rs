@@ -10,9 +10,9 @@ Progress:
 - [x] Write TS content to fragment stream (defaults to filesystem);
 - [x] Write HLS playlist m3u8 file;
 - [x] Delete old fragments;
-- [ ] Signal to acquire fragment stream;
-- [ ] Signal to acquire HLS playlist stream;
-- [ ] Signal to delete a fragment file;
+- [x] Signal to acquire fragment stream;
+- [x] Signal to acquire HLS playlist stream;
+- [x] Signal to delete a fragment file;
 
 ## Example Usage
 

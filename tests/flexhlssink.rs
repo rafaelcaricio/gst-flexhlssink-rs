@@ -1,3 +1,4 @@
+use gio::prelude::*;
 use glib::prelude::*;
 use gst::gst_info;
 use gst::prelude::*;
@@ -23,6 +24,35 @@ fn init() {
         gst::init().unwrap();
         flexhlssink::plugin_register_static().expect("flexhlssink test");
     });
+}
+
+#[test]
+fn test_events() {
+    init();
+
+    let mut h = gst_check::Harness::new_parse(
+        "videotestsrc is-live=true ! x264enc ! h264parse ! flexhlssink",
+    );
+    let flexhlssink = h.find_element("flexhlssink").unwrap();
+
+    let fragment_location = "test.ts".to_string();
+
+    let fragment_stream = flexhlssink
+        .emit_by_name("get-fragment-stream", &[&fragment_location])
+        .expect("successful result")
+        .expect("return some value")
+        .get::<gio::OutputStream>()
+        .expect("it's a gio::OutputStream value");
+
+    // write something, just to make sure it is valid!
+    fragment_stream
+        .write("TEST".as_bytes(), gio::NONE_CANCELLABLE)
+        .unwrap();
+
+    assert!(flexhlssink
+        .emit_by_name("delete-fragment", &[&fragment_location])
+        .expect("successful result")
+        .is_none());
 }
 
 #[test]
@@ -98,7 +128,7 @@ fn test_basic_element_with_video_content() {
         "flexhlssink_video_pipeline: waiting for {} buffers",
         BUFFER_NB
     );
-    for idx in 0..BUFFER_NB {
+    for _idx in 0..BUFFER_NB {
         receiver.recv().unwrap();
         //gst_info!(CAT, "flexhlssink_video_pipeline: received buffer #{}", idx);
     }
