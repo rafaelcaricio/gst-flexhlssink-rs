@@ -1,10 +1,9 @@
+use crate::playlist::PlaylistRenderState;
 use gio::prelude::*;
 use glib::subclass::prelude::*;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst::{gst_debug, gst_error, gst_info, gst_trace, gst_warning};
-
-use crate::playlist::PlaylistRenderState;
 use m3u8_rs::playlist::{MediaPlaylist, MediaSegment};
 use once_cell::sync::Lazy;
 use std::fs;
@@ -43,7 +42,6 @@ struct Settings {
     target_duration: u32,
     send_keyframe_requests: bool,
 
-    // TODO: old_locations ? Maybe just use another thread and send msgs with files to delete ?
     splitmuxsink: Option<gst::Element>,
     giostreamsink: Option<gst::Element>,
     video_sink: bool,
@@ -108,8 +106,10 @@ impl FlexHlsSink {
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
         gst_info!(CAT, obj: element, "Starting");
 
-        let settings = self.settings.lock().unwrap();
-        let target_duration = settings.target_duration as f32;
+        let target_duration = {
+            let settings = self.settings.lock().unwrap();
+            settings.target_duration as f32
+        };
 
         let mut state = self.state.lock().unwrap();
         if let State::Stopped = *state {
@@ -131,7 +131,7 @@ impl FlexHlsSink {
                 playlist_index: 0,
                 current_segment_location: None,
                 fragment_opened_at: None,
-                old_segment_locations: Vec::new(),
+                old_segment_locations: vec![],
             };
         }
 
@@ -235,7 +235,7 @@ impl FlexHlsSink {
 
         let mut state = self.state.lock().unwrap();
         match &mut *state {
-            State::Stopped => {}
+            State::Stopped => return Err(gst::StateChangeError),
             State::Started {
                 fragment_opened_at,
                 playlist,
@@ -623,9 +623,7 @@ impl ObjectImpl for FlexHlsSink {
         }
     }
 
-    // Called right after construction of a new instance
     fn constructed(&self, obj: &Self::Type) {
-        // Call the parent class' ::constructed() implementation first
         self.parent_constructed(obj);
 
         let mut settings = self.settings.lock().unwrap();
